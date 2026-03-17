@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
 from ..models.profile import UserProfile
@@ -6,99 +7,176 @@ from ..models.profile import UserProfile
 logger = logging.getLogger(__name__)
 
 
-def score_opportunity(opp: dict, profile: UserProfile) -> Tuple[float, str, List[str]]:
-    """
-    Score an opportunity against a user profile.
-    Returns (score 0.0-1.0, label "High"|"Medium"|"Low", reasons list)
+def _get_attr(obj, key, default=None):
+    """Get attribute from either a dict or an object."""
+    if isinstance(obj, dict):
+        val = obj.get(key, default)
+    else:
+        val = getattr(obj, key, default)
+    return val if val is not None else default
+
+
+def score_opportunity(opportunity, profile) -> Tuple[float, List[str]]:
+    """Score an opportunity against a user profile.
+
+    Returns (score 0.0-1.0, reasons list).
+    Works with both dict and object-style opportunities.
     """
     score = 0.0
     reasons = []
 
-    # NAICS match: +0.4
-    opp_naics = set(opp.get("naics_codes") or [])
-    profile_naics = set(profile.naics_codes or [])
-    if opp_naics & profile_naics:
-        score += 0.4
-        matched = opp_naics & profile_naics
-        reasons.append(f"NAICS {', '.join(sorted(matched))} matches profile")
+    opp_naics = _get_attr(opportunity, "naics_codes", []) or []
+    opp_set_asides = _get_attr(opportunity, "set_asides", []) or []
+    opp_state = _get_attr(opportunity, "state")
+    opp_value_min = _get_attr(opportunity, "value_min")
+    opp_value_max = _get_attr(opportunity, "value_max")
+    opp_title = _get_attr(opportunity, "title", "") or ""
+    opp_description = _get_attr(opportunity, "description", "") or ""
 
-    # Certification/set_aside match: +0.25
-    opp_set_asides = set(opp.get("set_asides") or [])
-    profile_certs = set(profile.certifications or [])
-    if opp_set_asides & profile_certs:
-        score += 0.25
-        matched = opp_set_asides & profile_certs
-        reasons.append(f"Set-aside {', '.join(sorted(matched))} matches certification")
+    # NAICS (40 points)
+    if profile.naics_codes:
+        if any(n in opp_naics for n in profile.naics_codes):
+            score += 0.40
+            reasons.append("NAICS match")
+        elif any(n[:4] in [o[:4] for o in opp_naics] for n in profile.naics_codes):
+            score += 0.20
+            reasons.append("NAICS partial match")
 
-    # Keyword match: +0.2
+    # Certifications (25 points)
+    if profile.certifications and opp_set_asides:
+        if any(c in opp_set_asides for c in profile.certifications):
+            score += 0.25
+            reasons.append("Certification match")
+    elif not opp_set_asides:
+        score += 0.10
+        reasons.append("Unrestricted")
+
+    # Value range (20 points)
+    if profile.value_min is not None and profile.value_max is not None:
+        opp_min = opp_value_min or 0
+        opp_max = opp_value_max or float("inf")
+        if opp_max >= profile.value_min and opp_min <= profile.value_max:
+            score += 0.20
+            reasons.append("Value range match")
+
+    # Geography (10 points)
+    if profile.states and opp_state in profile.states:
+        score += 0.10
+        reasons.append("Geography match")
+
+    # Keywords (5 points)
     if profile.keywords:
-        title = (opp.get("title") or "").lower()
-        desc = (opp.get("description") or "").lower()
-        text = f"{title} {desc}"
-        matched_kw = [kw for kw in profile.keywords if kw.lower() in text]
-        if matched_kw:
-            score += 0.2
-            reasons.append(f"Keywords matched: {', '.join(matched_kw[:3])}")
+        text = f"{opp_title} {opp_description}".lower()
+        matched = [k for k in profile.keywords if k.lower() in text]
+        if matched:
+            score += min(0.05 * len(matched), 0.05)
+            reasons.append(f"Keywords: {', '.join(matched)}")
 
-    # State match: +0.1
-    opp_state = opp.get("state")
-    if opp_state and profile.states and opp_state in profile.states:
-        score += 0.1
-        reasons.append(f"State {opp_state} matches profile")
-
-    # Value in range: +0.05
-    value_min = opp.get("value_min")
-    value_max = opp.get("value_max")
-    profile_min = profile.value_min
-    profile_max = profile.value_max
-    if _value_in_range(value_min, value_max, profile_min, profile_max):
-        score += 0.05
-        reasons.append("Value range in profile range")
-
-    score = min(score, 1.0)
-
-    if score >= 0.7:
-        label = "High"
-    elif score >= 0.4:
-        label = "Medium"
-    else:
-        label = "Low"
-
-    return score, label, reasons
+    return min(score, 1.0), reasons
 
 
-def _value_in_range(
-    opp_min: Optional[float],
-    opp_max: Optional[float],
-    profile_min: Optional[float],
-    profile_max: Optional[float],
-) -> bool:
-    if profile_min is None and profile_max is None:
-        return False
-    opp_val = opp_min or opp_max
-    if opp_val is None:
-        return False
-    if profile_min is not None and opp_val < profile_min:
-        return False
-    if profile_max is not None and opp_val > profile_max:
-        return False
-    return True
+def score_to_label(score: float) -> str:
+    if score >= 0.65:
+        return "High"
+    if score >= 0.35:
+        return "Medium"
+    return "Low"
+
+
+def get_urgency_tier(days: Optional[int]) -> str:
+    if days is None:
+        return "normal"
+    if days <= 2:
+        return "urgent"
+    if days <= 7:
+        return "closing_soon"
+    return "normal"
+
+
+class RelevanceEngine:
+    def __init__(self, db):
+        self.db = db
+
+    async def score_all(self, scan_id: str) -> None:
+        """Score all opportunities from a scan against the current profile."""
+        profile_doc = await self.db["user_profile"].find_one({})
+        if not profile_doc:
+            return
+        profile_doc.pop("_id", None)
+        profile = UserProfile(**profile_doc)
+
+        now = datetime.utcnow()
+        cursor = self.db["opportunities"].find({"scan_id": scan_id})
+        async for doc in cursor:
+            opp_id = doc["_id"]
+            score, reasons = score_opportunity(doc, profile)
+            label = score_to_label(score)
+
+            # Compute urgency
+            deadline = doc.get("response_deadline")
+            days_until = None
+            if deadline:
+                if hasattr(deadline, "replace"):
+                    diff = deadline.replace(tzinfo=None) - now
+                    days_until = diff.days
+            urgency_tier = get_urgency_tier(days_until)
+            is_urgent = urgency_tier == "urgent"
+
+            await self.db["opportunities"].update_one(
+                {"_id": opp_id},
+                {
+                    "$set": {
+                        "relevance_score": score,
+                        "relevance_label": label,
+                        "relevance_reasons": reasons,
+                        "days_until_deadline": days_until,
+                        "urgency_tier": urgency_tier,
+                        "is_urgent": is_urgent,
+                    }
+                },
+            )
+        logger.info(f"Scored all opportunities for scan {scan_id}")
+
+    async def rescore_all(self) -> None:
+        """Rescore all opportunities in DB against the current profile."""
+        await rescore_all(self.db)
 
 
 async def rescore_all(db) -> None:
-    """Rescore all opportunities in DB against the current profile."""
+    """Standalone rescore all opportunities (used by profile router)."""
     profile_doc = await db["user_profile"].find_one({})
     if not profile_doc:
         return
     profile_doc.pop("_id", None)
     profile = UserProfile(**profile_doc)
 
+    now = datetime.utcnow()
     cursor = db["opportunities"].find({})
     async for doc in cursor:
         opp_id = doc["_id"]
-        score, label, reasons = score_opportunity(doc, profile)
+        score, reasons = score_opportunity(doc, profile)
+        label = score_to_label(score)
+
+        deadline = doc.get("response_deadline")
+        days_until = None
+        if deadline:
+            if hasattr(deadline, "replace"):
+                diff = deadline.replace(tzinfo=None) - now
+                days_until = diff.days
+        urgency_tier = get_urgency_tier(days_until)
+        is_urgent = urgency_tier == "urgent"
+
         await db["opportunities"].update_one(
             {"_id": opp_id},
-            {"$set": {"relevance_score": score, "relevance_label": label, "relevance_reasons": reasons}},
+            {
+                "$set": {
+                    "relevance_score": score,
+                    "relevance_label": label,
+                    "relevance_reasons": reasons,
+                    "days_until_deadline": days_until,
+                    "urgency_tier": urgency_tier,
+                    "is_urgent": is_urgent,
+                }
+            },
         )
     logger.info("Rescored all opportunities")
