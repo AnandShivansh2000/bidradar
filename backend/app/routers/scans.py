@@ -195,6 +195,16 @@ async def get_scan(scan_id: str):
     return _doc_to_scan(doc)
 
 
+async def _run_scan_with_relevance(agent, scan_id: str):
+    """Run a scan then score all resulting opportunities."""
+    from ..services.relevance_engine import RelevanceEngine
+    from ..database import get_db as _get_db
+    db = _get_db()
+    await agent.run_scan(scan_id)
+    engine = RelevanceEngine(db)
+    await engine.score_all(scan_id)
+
+
 @router.post("/trigger")
 async def trigger_scan(portal: str = Query(default="sam_gov"), background_tasks: BackgroundTasks = None):
     db = get_db()
@@ -215,10 +225,77 @@ async def trigger_scan(portal: str = Query(default="sam_gov"), background_tasks:
     result = await db["scans"].insert_one(scan_doc)
     scan_id = str(result.inserted_id)
 
-    if background_tasks and portal == "sam_gov":
-        from ..agents.sam_gov_agent import SamGovAgent
-        agent = SamGovAgent(db)
-        background_tasks.add_task(agent.run_scan, scan_id)
+    if background_tasks:
+        if portal == "sam_gov":
+            from ..agents.sam_gov_agent import SamGovAgent
+            agent = SamGovAgent(db)
+            background_tasks.add_task(_run_scan_with_relevance, agent, scan_id)
+        elif portal == "cal_eprocure":
+            from ..agents.cal_eprocure_agent import CalEprocureAgent
+            agent = CalEprocureAgent(db)
+            background_tasks.add_task(_run_scan_with_relevance, agent, scan_id)
+        elif portal == "tx_smartbuy":
+            from ..agents.tx_smartbuy_agent import TxSmartbuyAgent
+            agent = TxSmartbuyAgent(db)
+            background_tasks.add_task(_run_scan_with_relevance, agent, scan_id)
+
+    scan_doc["id"] = scan_id
+    scan_doc.pop("_id", None)
+    return scan_doc
+
+
+@router.post("/cal_eprocure")
+async def trigger_cal_eprocure_scan(background_tasks: BackgroundTasks):
+    db = get_db()
+    now = datetime.utcnow()
+    scan_doc = {
+        "portal": "cal_eprocure",
+        "status": "running",
+        "started_at": now,
+        "completed_at": None,
+        "opportunities_found": 0,
+        "opportunities_new": 0,
+        "opportunities_updated": 0,
+        "opportunities_skipped": 0,
+        "error_message": None,
+        "tinyfish_session_id": None,
+        "stream_url": None,
+    }
+    result = await db["scans"].insert_one(scan_doc)
+    scan_id = str(result.inserted_id)
+
+    from ..agents.cal_eprocure_agent import CalEprocureAgent
+    agent = CalEprocureAgent(db)
+    background_tasks.add_task(_run_scan_with_relevance, agent, scan_id)
+
+    scan_doc["id"] = scan_id
+    scan_doc.pop("_id", None)
+    return scan_doc
+
+
+@router.post("/tx_smartbuy")
+async def trigger_tx_smartbuy_scan(background_tasks: BackgroundTasks):
+    db = get_db()
+    now = datetime.utcnow()
+    scan_doc = {
+        "portal": "tx_smartbuy",
+        "status": "running",
+        "started_at": now,
+        "completed_at": None,
+        "opportunities_found": 0,
+        "opportunities_new": 0,
+        "opportunities_updated": 0,
+        "opportunities_skipped": 0,
+        "error_message": None,
+        "tinyfish_session_id": None,
+        "stream_url": None,
+    }
+    result = await db["scans"].insert_one(scan_doc)
+    scan_id = str(result.inserted_id)
+
+    from ..agents.tx_smartbuy_agent import TxSmartbuyAgent
+    agent = TxSmartbuyAgent(db)
+    background_tasks.add_task(_run_scan_with_relevance, agent, scan_id)
 
     scan_doc["id"] = scan_id
     scan_doc.pop("_id", None)
