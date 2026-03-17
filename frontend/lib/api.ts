@@ -1,6 +1,6 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
@@ -13,15 +13,18 @@ async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
 
 import type { Opportunity, Scan, Portal, UserProfile, OpportunityFilters } from "./types";
 
-export async function getOpportunities(filters: OpportunityFilters = {}): Promise<Opportunity[]> {
+export async function getOpportunities(filters: OpportunityFilters = {}, limit = 50, offset = 0): Promise<Opportunity[]> {
   const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
   if (filters.relevance && filters.relevance !== "all") params.set("relevance", filters.relevance);
   if (filters.portal && filters.portal !== "all") params.set("portal", filters.portal);
   if (filters.urgent_only) params.set("urgent_only", "true");
   if (filters.sort) params.set("sort", filters.sort);
   if (filters.search) params.set("search", filters.search);
-  const qs = params.toString();
-  return fetchApi<Opportunity[]>(`/api/v1/opportunities${qs ? `?${qs}` : ""}`);
+  if (filters.set_aside && filters.set_aside !== "all") params.set("set_aside", filters.set_aside);
+  if (filters.state && filters.state !== "all") params.set("state", filters.state);
+  return fetchApi<Opportunity[]>(`/api/v1/opportunities?${params.toString()}`);
 }
 
 export async function getOpportunity(id: string): Promise<Opportunity> {
@@ -50,7 +53,7 @@ export async function getProfile(): Promise<UserProfile> {
 
 export async function updateProfile(profile: Partial<UserProfile>): Promise<UserProfile> {
   return fetchApi<UserProfile>("/api/v1/profile", {
-    method: "PUT",
+    method: "POST",
     body: JSON.stringify(profile),
   });
 }

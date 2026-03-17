@@ -1,378 +1,388 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, Suspense } from "react";
+import { useState, useEffect, useRef, useCallback, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
+import { RelevanceBadge } from "@/components/RelevanceBadge";
+import { UrgencyBadge } from "@/components/UrgencyBadge";
+import type { Opportunity, Scan } from "@/lib/types";
+import { MOCK_OPPORTUNITIES } from "@/lib/mock-data";
 import { triggerScan, getScan, getScanOpportunities, getDemoReplay } from "@/lib/api";
-import type { Opportunity, ScanStatus } from "@/lib/types";
 
-type Portal = "sam_gov" | "cal_eprocure" | "tx_smartbuy";
+type ScanState = "idle" | "starting" | "running" | "complete" | "failed";
 
-const PORTAL_LABELS: Record<Portal, string> = {
-  sam_gov: "SAM.gov",
-  cal_eprocure: "Cal eProcure",
-  tx_smartbuy: "TX SmartBuy",
-};
+const PORTALS = [
+  { value: "sam_gov", label: "SAM.gov" },
+  { value: "cal_eprocure", label: "Cal eProcure" },
+  { value: "tx_smartbuy", label: "Texas SmartBuy" },
+];
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function formatValue(value: number | null, min: number | null, max: number | null): string {
-  if (value) return `$${(value / 1000000).toFixed(1)}M`;
-  if (min) return `$${(min / 1000).toFixed(0)}K+`;
-  if (max) return `Up to $${(max / 1000).toFixed(0)}K`;
-  return "N/A";
+function formatValue(opp: Opportunity): string {
+  if (opp.value_display) return opp.value_display;
+  if (opp.value_min) {
+    const fmt = (n: number) =>
+      n >= 1000000 ? `$${(n / 1000000).toFixed(1)}M` : `$${(n / 1000).toFixed(0)}K`;
+    if (opp.value_max) return `${fmt(opp.value_min)}–${fmt(opp.value_max)}`;
+    return fmt(opp.value_min);
+  }
+  return "TBD";
 }
 
-function ResultCard({ opp, index }: { opp: Opportunity; index: number }) {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => setVisible(true), index * 150);
-    return () => clearTimeout(timer);
-  }, [index]);
+function formatDeadline(opp: Opportunity): string {
+  const d = opp.response_deadline ?? opp.deadline;
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
-  const title = opp.title.length > 45 ? opp.title.slice(0, 45) + "…" : opp.title;
-  const days = opp.deadline
-    ? Math.ceil((new Date(opp.deadline).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
-    : null;
+function getDays(opp: Opportunity): number | null {
+  if (opp.days_until_deadline !== undefined && opp.days_until_deadline !== null) {
+    return opp.days_until_deadline;
+  }
+  const d = opp.response_deadline ?? opp.deadline;
+  if (!d) return null;
+  return Math.ceil((new Date(d).getTime() - Date.now()) / 86400000);
+}
+
+function truncate(str: string, n: number) {
+  return str.length > n ? str.slice(0, n) + "…" : str;
+}
+
+function OpportunityCard({ opp }: { opp: Opportunity }) {
+  const label = (opp.relevance_label?.toLowerCase() ?? opp.relevance_level ?? "low") as "high" | "medium" | "low";
+  const days = getDays(opp);
 
   return (
-    <div
-      className={`transition-all duration-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2"}`}
-    >
-      <Link href={`/opportunities/${opp.id}`}>
-        <div className="border border-gray-200 rounded-lg p-3 bg-white hover:shadow-sm hover:border-emerald-200 transition-all cursor-pointer mb-2">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1 mb-1 flex-wrap">
-                {opp.relevance_level === "high" && (
-                  <span className="text-xs bg-green-100 text-green-700 border border-green-200 rounded-full px-2 py-0.5">High</span>
-                )}
-                {opp.relevance_level === "medium" && (
-                  <span className="text-xs bg-yellow-100 text-yellow-700 border border-yellow-200 rounded-full px-2 py-0.5">Medium</span>
-                )}
-                {opp.is_urgent && (
-                  <span className="text-xs bg-red-100 text-red-700 rounded-full px-2 py-0.5">🔴 Urgent</span>
-                )}
-              </div>
-              <p className="text-sm font-medium text-gray-900 leading-snug">{title}</p>
-              <p className="text-xs text-gray-500 mt-0.5">{opp.agency}</p>
-            </div>
-            <div className="text-right shrink-0">
-              <p className="text-xs font-semibold text-emerald-700">
-                {formatValue(opp.value, opp.value_min, opp.value_max)}
-              </p>
-              {days !== null && (
-                <p className={`text-xs mt-0.5 ${days <= 3 ? "text-red-600" : "text-gray-500"}`}>
-                  {days}d
-                </p>
-              )}
-            </div>
-          </div>
+    <div className="animate-fade-in-down border border-slate-200 rounded-lg p-3 bg-white hover:border-slate-300 hover:shadow-sm transition-all">
+      <div className="flex items-start justify-between gap-2 mb-1">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <RelevanceBadge variant={label} score={opp.relevance_score ?? undefined} />
+          <UrgencyBadge daysUntilDeadline={days} />
         </div>
-      </Link>
+      </div>
+      <p className="text-sm font-medium text-slate-900 leading-snug mt-1.5 mb-1">
+        {truncate(opp.title, 60)}
+      </p>
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <span className="text-slate-500">{opp.agency}</span>
+        <span className="text-slate-300">·</span>
+        <span className="font-medium text-slate-700">{formatValue(opp)}</span>
+        <span className="text-slate-300">·</span>
+        <span
+          className={
+            days !== null && days <= 2
+              ? "text-red-600 font-medium"
+              : days !== null && days <= 7
+              ? "text-orange-600 font-medium"
+              : "text-slate-500"
+          }
+        >
+          {formatDeadline(opp)}
+        </span>
+      </div>
     </div>
   );
 }
 
-function ScanPageInner() {
+function ScanPageContent() {
   const searchParams = useSearchParams();
+  const isDemo = searchParams.get("replay") === "true";
 
-  const [portal, setPortal] = useState<Portal>("sam_gov");
-  const [scanId, setScanId] = useState<string | null>(null);
+  const [selectedPortal, setSelectedPortal] = useState("sam_gov");
+  const [scanState, setScanState] = useState<ScanState>("idle");
+  const [scan, setScan] = useState<Scan | null>(null);
+  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
-  const [results, setResults] = useState<Opportunity[]>([]);
-  const [isScanning, setIsScanning] = useState(false);
-  const [isReplay, setIsReplay] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [statusText, setStatusText] = useState("Ready to scan");
-  const [isPulsing, setIsPulsing] = useState(false);
+  const [matchCount, setMatchCount] = useState(0);
 
   const pollRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const startTimeRef = useRef<number>(0);
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+  const stopAll = useCallback(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   }, []);
 
-  const startReplay = useCallback(async () => {
-    setIsReplay(true);
-    setIsScanning(false);
-    setStreamUrl(null);
-    setScanStatus(null);
-    setResults([]);
-    setError(null);
-    setStatusText("Loading demo replay…");
-    setIsPulsing(true);
+  useEffect(() => () => stopAll(), [stopAll]);
 
-    try {
-      const opps = await getDemoReplay();
-      for (let i = 0; i < opps.length; i++) {
-        await new Promise((res) => setTimeout(res, 1000));
-        setResults((prev) => [...prev, opps[i]]);
-        setStatusText(`Replaying opportunity ${i + 1} of ${opps.length}…`);
-      }
-      setStatusText("Demo replay complete");
-      setIsPulsing(false);
-    } catch {
-      setStatusText("Demo replay failed");
-      setIsPulsing(false);
-    }
+  // Auto-start demo on mount
+  useEffect(() => {
+    if (isDemo) startDemoReplay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const startScan = useCallback(async () => {
-    stopPolling();
-    setResults([]);
-    setError(null);
-    setIsReplay(false);
-    setIsScanning(true);
+  const startTimer = () => {
+    startTimeRef.current = Date.now();
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
+    }, 1000);
+  };
+
+  const startDemoReplay = useCallback(async () => {
+    stopAll();
+    setScanState("starting");
+    setOpportunities([]);
+    setMatchCount(0);
+    setErrorMsg(null);
+    setStreamUrl("https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1&mute=1");
+    setElapsedSeconds(0);
+
+    await new Promise((r) => setTimeout(r, 800));
+    setScanState("running");
+    startTimer();
+
+    let demoOpps: Opportunity[] = [];
+    try { demoOpps = await getDemoReplay(); } catch { demoOpps = MOCK_OPPORTUNITIES; }
+
+    demoOpps.slice(0, 5).forEach((opp, i) => {
+      setTimeout(() => {
+        setOpportunities((prev) => [opp, ...prev]);
+        setMatchCount((c) => c + 1);
+      }, (i + 1) * 1500);
+    });
+
+    setTimeout(() => {
+      setScanState("complete");
+      stopAll();
+    }, demoOpps.slice(0, 5).length * 1500 + 1500);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopAll]);
+
+  const startRealScan = useCallback(async () => {
+    stopAll();
+    setScanState("starting");
+    setOpportunities([]);
+    setMatchCount(0);
+    setErrorMsg(null);
     setStreamUrl(null);
-    setScanStatus("pending");
-    setStatusText("Starting scan…");
-    setIsPulsing(true);
+    setElapsedSeconds(0);
 
     try {
-      const scan = await triggerScan(portal);
-      setScanId(scan.id);
-      setStreamUrl(scan.stream_url || null);
-      setScanStatus(scan.status);
-      setStatusText(`Scanning ${PORTAL_LABELS[portal]}…`);
+      const newScan = await triggerScan(selectedPortal);
+      setScan(newScan);
+      if (newScan.stream_url) setStreamUrl(newScan.stream_url);
+      setScanState("running");
+      startTimer();
 
       pollRef.current = setInterval(async () => {
         try {
           const [updatedScan, opps] = await Promise.all([
-            getScan(scan.id),
-            getScanOpportunities(scan.id),
+            getScan(newScan.id),
+            getScanOpportunities(newScan.id),
           ]);
-          setScanStatus(updatedScan.status);
-          setResults(opps);
-
-          if (updatedScan.status === "completed") {
-            stopPolling();
-            setIsScanning(false);
-            setIsPulsing(false);
-            setStatusText("Scan complete");
-          } else if (updatedScan.status === "failed") {
-            stopPolling();
-            setIsScanning(false);
-            setIsPulsing(false);
-            setError(updatedScan.error_message || "Scan failed");
-            setStatusText("Scan failed");
-            setTimeout(() => startReplay(), 2000);
-          } else {
-            setStatusText(`Scanning… ${opps.length} found so far`);
+          setScan(updatedScan);
+          setOpportunities(opps.slice(0, 20));
+          setMatchCount(opps.filter((o) => (o.relevance_score ?? 0) >= 0.7).length);
+          if (updatedScan.status === "completed" || updatedScan.status === "failed") {
+            stopAll();
+            setScanState(updatedScan.status === "completed" ? "complete" : "failed");
+            if (updatedScan.error_message) setErrorMsg(updatedScan.error_message);
           }
-        } catch {
-          stopPolling();
-          setIsScanning(false);
-          setIsPulsing(false);
-          setError("Connection error");
-          setTimeout(() => startReplay(), 2000);
-        }
+        } catch { /* ignore poll errors */ }
       }, 3000);
-    } catch {
-      setIsScanning(false);
-      setIsPulsing(false);
-      setError("Failed to start scan");
-      setStatusText("Failed to start scan");
-      setTimeout(() => startReplay(), 2000);
+    } catch (err) {
+      setScanState("failed");
+      setErrorMsg(err instanceof Error ? err.message : "Unknown error");
     }
-  }, [portal, stopPolling, startReplay]);
-
-  // suppress unused variable warning
-  void scanId;
-
-  useEffect(() => {
-    if (searchParams.get("replay") === "true") {
-      startReplay();
-    }
-    return () => stopPolling();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedPortal, stopAll]);
+
+  const resetScan = () => {
+    stopAll();
+    setScanState("idle");
+    setOpportunities([]);
+    setStreamUrl(null);
+    setErrorMsg(null);
+    setScan(null);
+    setElapsedSeconds(0);
+    setMatchCount(0);
+  };
+
+  const totalFound = scan?.opportunities_found ?? opportunities.length;
+  const portalLabel = PORTALS.find((p) => p.value === selectedPortal)?.label ?? selectedPortal;
+  const mins = String(Math.floor(elapsedSeconds / 60)).padStart(2, "0");
+  const secs = String(elapsedSeconds % 60).padStart(2, "0");
 
   return (
-    <div className="h-screen bg-gray-900 flex flex-col overflow-hidden">
-      {/* Top Nav */}
-      <div className="bg-gray-900 border-b border-gray-700 px-6 py-3 flex items-center justify-between shrink-0">
-        <Link href="/feed" className="text-gray-400 hover:text-white text-sm transition-colors">
-          ← Back to Feed
+    <div className="flex flex-col h-screen bg-slate-950 text-white overflow-hidden">
+      {/* Header bar */}
+      <header className="flex items-center gap-3 px-5 py-3 bg-slate-900 border-b border-slate-800 shrink-0">
+        <Link href="/dashboard" className="text-slate-400 hover:text-white text-sm transition-colors">
+          ← Dashboard
         </Link>
-        <span className="text-white font-bold">🎯 BidRadar — Live Scan</span>
-        <Link href="/feed">
-          <span className="text-emerald-400 text-sm hover:text-emerald-300 cursor-pointer">View Feed →</span>
-        </Link>
-      </div>
+        <div className="h-4 w-px bg-slate-700" />
+        <span className="font-bold text-white">📡 BidRadar</span>
+        <span className="text-slate-500 text-sm">/</span>
+        <span className="text-slate-300 text-sm">Live Scan</span>
 
-      {/* Split screen */}
+        <div className="flex-1" />
+
+        {isDemo && (
+          <span className="rounded-full bg-purple-950 border border-purple-700 px-3 py-1 text-xs font-medium text-purple-300">
+            🎬 Demo Mode
+          </span>
+        )}
+
+        {/* Status */}
+        <div className="flex items-center gap-2 text-sm">
+          {scanState === "idle" && <span className="text-slate-400">Ready to scan</span>}
+          {scanState === "starting" && <span className="text-yellow-400 animate-pulse">⏳ Starting…</span>}
+          {scanState === "running" && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-green-400 animate-pulse" />
+              <span className="text-green-400 font-medium">{portalLabel} — {mins}:{secs}</span>
+              <span className="text-slate-400">· {opportunities.length} found</span>
+            </>
+          )}
+          {scanState === "complete" && (
+            <span className="text-green-400">
+              ✅ Scan complete — {totalFound} found. {matchCount} match your profile.
+            </span>
+          )}
+          {scanState === "failed" && (
+            <span className="text-red-400">
+              ❌ Scan failed{errorMsg ? `: ${errorMsg}` : ""}. Using last known results.
+            </span>
+          )}
+        </div>
+      </header>
+
+      {/* Main split */}
       <div className="flex flex-1 overflow-hidden">
-        {/* LEFT PANEL — 55% */}
-        <div className="w-[55%] flex flex-col border-r border-gray-700 bg-gray-950">
-          {/* Left header */}
-          <div className="px-6 py-4 border-b border-gray-700 bg-gray-900 shrink-0">
-            <div className="flex items-center gap-3 mb-1">
-              <div className={`w-2.5 h-2.5 rounded-full ${isPulsing ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
-              <h2 className="text-white font-semibold">🤖 Live Agent</h2>
-            </div>
-            <p className="text-gray-400 text-sm ml-5">
-              {isScanning ? `Scanning ${PORTAL_LABELS[portal]}` : isReplay ? "Demo Replay Mode" : "Ready"}
-            </p>
-          </div>
+        {/* Left: stream panel (55%) */}
+        <div className="flex flex-col border-r border-slate-800" style={{ width: "55%" }}>
+          {/* Controls */}
+          <div className="flex items-center gap-3 px-4 py-3 bg-slate-900 border-b border-slate-800 shrink-0">
+            <select
+              value={selectedPortal}
+              onChange={(e) => { setSelectedPortal(e.target.value); if (scanState !== "idle") resetScan(); }}
+              className="rounded bg-slate-800 border border-slate-700 text-white text-sm px-2 py-1.5 focus:outline-none focus:border-slate-500"
+              disabled={scanState === "running" || scanState === "starting"}
+            >
+              {PORTALS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
 
-          {/* Portal selector + buttons */}
-          <div className="px-6 py-4 border-b border-gray-700 bg-gray-900 shrink-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              <select
-                value={portal}
-                onChange={(e) => setPortal(e.target.value as Portal)}
-                disabled={isScanning}
-                className="bg-gray-800 text-white border border-gray-600 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50"
-              >
-                <option value="sam_gov">SAM.gov</option>
-                <option value="cal_eprocure">Cal eProcure</option>
-                <option value="tx_smartbuy">TX SmartBuy</option>
-              </select>
-
-              <button
-                onClick={startScan}
-                disabled={isScanning}
-                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold px-4 py-2 rounded-md text-sm transition-colors"
-              >
-                {isScanning ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Scanning…
-                  </>
-                ) : (
-                  "▶ Start Scan"
-                )}
-              </button>
-
-              <button
-                onClick={startReplay}
-                disabled={isScanning}
-                className="flex items-center gap-2 border border-gray-600 hover:border-gray-400 disabled:opacity-50 text-gray-300 hover:text-white px-4 py-2 rounded-md text-sm transition-colors"
-              >
-                🔄 Replay Demo
-              </button>
-            </div>
-          </div>
-
-          {/* Terminal / iframe area */}
-          <div className="flex-1 overflow-hidden relative">
-            {isScanning && streamUrl ? (
-              <iframe
-                src={streamUrl}
-                className="w-full h-full border-0 bg-gray-950"
-                title="Live agent stream"
-              />
-            ) : isReplay ? (
-              <div className="w-full h-full flex flex-col items-center justify-center bg-gray-950 p-8">
-                <div className="border border-gray-700 rounded-lg p-6 text-center max-w-sm">
-                  <div className="inline-flex items-center gap-2 bg-yellow-900/50 border border-yellow-600/50 text-yellow-400 rounded-full px-3 py-1 text-xs font-medium mb-4">
-                    📹 Demo Mode — Pre-recorded scan
-                  </div>
-                  <div className="text-gray-500 font-mono text-xs text-left space-y-1">
-                    <p className="text-green-400">$ bidradar-agent --portal demo</p>
-                    <p className="text-gray-400">Loading pre-recorded session…</p>
-                    <p className="text-emerald-400 animate-pulse">{statusText}</p>
-                  </div>
-                </div>
-              </div>
+            {(scanState === "idle" || scanState === "failed" || scanState === "complete") ? (
+              <>
+                <button
+                  onClick={startRealScan}
+                  className="rounded bg-green-600 hover:bg-green-500 px-4 py-1.5 text-sm font-semibold transition-colors"
+                >
+                  ▶ Run Scan
+                </button>
+                <button
+                  onClick={startDemoReplay}
+                  className="rounded bg-slate-700 hover:bg-slate-600 border border-slate-600 px-3 py-1.5 text-sm font-medium transition-colors"
+                >
+                  🎬 Demo
+                </button>
+              </>
             ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gray-950">
-                <div className="text-center p-8">
-                  <div className="text-gray-600 font-mono text-sm mb-4">
-                    <p className="text-gray-500">$ bidradar-agent --portal {portal}</p>
-                    <p className="text-gray-600 mt-2">Click Start Scan to launch agent</p>
-                    <p className="text-emerald-800 mt-1 animate-pulse">_</p>
-                  </div>
-                </div>
-              </div>
+              <button
+                onClick={resetScan}
+                className="rounded bg-slate-700 hover:bg-slate-600 border border-slate-600 px-3 py-1.5 text-sm font-medium transition-colors"
+              >
+                ✕ Stop
+              </button>
             )}
           </div>
 
-          {/* Status bar */}
-          <div className="px-6 py-3 border-t border-gray-700 bg-gray-900 shrink-0">
-            <div className="flex items-center gap-2">
-              {isPulsing && <span className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />}
-              <span className="text-gray-400 text-xs font-mono">{statusText}</span>
-            </div>
+          {/* Stream area */}
+          <div className="relative flex-1 bg-slate-950 overflow-hidden">
+            {scanState === "running" && (
+              <div className="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded bg-red-600 px-2 py-1 text-xs font-bold text-white shadow">
+                <span className="h-1.5 w-1.5 rounded-full bg-white animate-pulse" />
+                LIVE
+              </div>
+            )}
+
+            {streamUrl ? (
+              <iframe
+                src={streamUrl}
+                className="w-full h-full"
+                allow="fullscreen; autoplay"
+                frameBorder="0"
+                title="Browser stream"
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full gap-4 text-center">
+                {(scanState === "running" || scanState === "starting") ? (
+                  <>
+                    <div className="h-14 w-14 rounded-full border-4 border-slate-700 border-t-green-400 animate-spin" />
+                    <p className="text-slate-400 text-sm">🤖 Agent is running — browser view not available</p>
+                  </>
+                ) : scanState === "idle" ? (
+                  <>
+                    <span className="text-6xl text-slate-800">📡</span>
+                    <p className="text-slate-500 text-sm">Select a portal and click Run Scan</p>
+                    <p className="text-slate-600 text-xs">or try 🎬 Demo mode</p>
+                  </>
+                ) : scanState === "complete" ? (
+                  <>
+                    <span className="text-5xl">✅</span>
+                    <p className="text-slate-300 text-sm font-medium">Scan complete</p>
+                    <p className="text-slate-500 text-sm">{totalFound} opportunities found</p>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-5xl">❌</span>
+                    <p className="text-red-400 text-sm">Scan failed</p>
+                    {errorMsg && <p className="text-slate-500 text-xs max-w-xs">{errorMsg}</p>}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* RIGHT PANEL — 45% */}
-        <div className="w-[45%] flex flex-col bg-white">
-          {/* Right header */}
-          <div className="px-6 py-4 border-b border-gray-200 bg-gray-50 shrink-0">
-            <h2 className="font-semibold text-gray-900">📊 Results</h2>
-            <p className="text-sm text-gray-500">{results.length} opportunit{results.length !== 1 ? "ies" : "y"} found</p>
+        {/* Right: results (45%) */}
+        <div className="flex flex-col bg-slate-50" style={{ width: "45%" }}>
+          <div className="flex items-center justify-between px-4 py-3 bg-white border-b border-slate-200 shrink-0">
+            <h2 className="text-sm font-semibold text-slate-800">
+              {scanState === "running"
+                ? `${opportunities.length} opportunities found`
+                : scanState === "complete"
+                ? `${totalFound} found`
+                : "Live Results"}
+            </h2>
+            {opportunities.length > 0 && (
+              <Link href="/dashboard" className="text-xs text-slate-500 hover:text-slate-800">
+                View all →
+              </Link>
+            )}
           </div>
 
-          {/* Results area */}
-          <div className="flex-1 overflow-y-auto p-4">
-            {/* Error state */}
-            {error && !isReplay && (
-              <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-                <p className="text-red-700 text-sm font-medium">❌ {error}</p>
-                <p className="text-red-600 text-xs mt-1">Auto-launching demo replay…</p>
-                <button
-                  onClick={startReplay}
-                  className="mt-2 text-xs text-red-600 underline hover:text-red-800"
-                >
-                  Retry Demo
-                </button>
-              </div>
-            )}
-
-            {/* Scanning spinner */}
-            {isScanning && results.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-12 text-center">
-                <div className="w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4" />
-                <p className="text-gray-500 text-sm">Results appearing live…</p>
-              </div>
-            )}
-
-            {/* Success banner */}
-            {scanStatus === "completed" && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-                <p className="text-green-700 text-sm font-semibold">
-                  ✅ Scan complete — {results.length} new opportunit{results.length !== 1 ? "ies" : "y"} found
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {opportunities.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-64 text-center gap-3">
+                <span className="text-4xl text-slate-300">📋</span>
+                <p className="text-slate-400 text-sm">
+                  {scanState === "idle"
+                    ? "Start a scan to see results here"
+                    : scanState === "starting"
+                    ? "Waiting for first results…"
+                    : "No results yet"}
                 </p>
-                <Link href="/feed">
-                  <button className="mt-2 text-xs text-emerald-600 font-medium underline hover:text-emerald-800">
-                    View in Feed →
-                  </button>
-                </Link>
               </div>
-            )}
-
-            {/* Replay complete */}
-            {isReplay && !isPulsing && results.length > 0 && (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-4">
-                <p className="text-emerald-700 text-sm font-semibold">
-                  ✅ Demo complete — {results.length} opportunit{results.length !== 1 ? "ies" : "y"} shown
-                </p>
-                <Link href="/feed">
-                  <button className="mt-2 text-xs text-emerald-600 font-medium underline hover:text-emerald-800">
-                    View in Feed →
-                  </button>
-                </Link>
-              </div>
-            )}
-
-            {/* Results list */}
-            {results.map((opp, i) => (
-              <ResultCard key={opp.id} opp={opp} index={i} />
-            ))}
-
-            {/* Empty state (not scanning, not replay, no results) */}
-            {!isScanning && !isReplay && results.length === 0 && !error && (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <div className="text-4xl mb-3">📡</div>
-                <p className="text-gray-500 text-sm">Start a scan to see opportunities</p>
-                <p className="text-gray-400 text-xs mt-1">or try the Demo Replay</p>
-              </div>
+            ) : (
+              <>
+                {opportunities.map((opp) => (
+                  <Link key={opp.id} href={`/dashboard/opportunity/${opp.id}`}>
+                    <OpportunityCard opp={opp} />
+                  </Link>
+                ))}
+                {opportunities.length >= 20 && (
+                  <div className="text-center py-2">
+                    <Link href="/dashboard" className="text-xs text-slate-400 hover:text-slate-700 underline">
+                      Load more →
+                    </Link>
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -383,8 +393,8 @@ function ScanPageInner() {
 
 export default function ScanPage() {
   return (
-    <Suspense fallback={<div className="h-screen bg-gray-900" />}>
-      <ScanPageInner />
+    <Suspense fallback={<div className="flex items-center justify-center h-screen bg-slate-950 text-white text-sm">Loading…</div>}>
+      <ScanPageContent />
     </Suspense>
   );
 }

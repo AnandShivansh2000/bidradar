@@ -15,7 +15,24 @@ const config: Config = {
         primary: "#10B981",
         "primary-hover": "#059669",
         surface: "#f9fafb",
-        border: "#e5e7eb",
+        border: "#e2e8f0",
+        // Design tokens
+        "color-high": "#22c55e",
+        "color-medium": "#eab308",
+        "color-low": "#94a3b8",
+        "color-urgent": "#ef4444",
+        "color-closing-soon": "#f97316",
+        "sidebar-bg": "#0f172a",
+        "content-bg": "#ffffff",
+      },
+      animation: {
+        "fade-in-down": "fadeInDown 0.2s ease-out",
+      },
+      keyframes: {
+        fadeInDown: {
+          "0%": { opacity: "0", transform: "translateY(-8px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
     },
   },
