@@ -1,0 +1,20 @@
+import logging
+from datetime import datetime
+from .base import BasePortalNormalizer
+from ...models.opportunity import OpportunityCreate
+
+logger = logging.getLogger(__name__)
+
+
+class TxSmartbuyNormalizer(BasePortalNormalizer):
+    """Stub normalizer for Texas SmartBuy portal."""
+
+    def normalize(self, raw: dict) -> OpportunityCreate:
+        return OpportunityCreate(
+            external_id=str(raw.get("external_id", "")),
+            portal="tx_smartbuy",
+            title=raw.get("title", ""),
+            agency=raw.get("agency", ""),
+            posted_date=datetime.utcnow(),
+            opportunity_url=raw.get("opportunity_url", ""),
+        )
